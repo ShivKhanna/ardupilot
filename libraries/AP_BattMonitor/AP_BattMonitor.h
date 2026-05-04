@@ -41,6 +41,7 @@ class AP_BattMonitor_SMBus_Generic;
 class AP_BattMonitor_SMBus_Maxell;
 class AP_BattMonitor_SMBus_Rotoye;
 class AP_BattMonitor_DroneCAN;
+class AP_BattMonitor_MAVLink;
 class AP_BattMonitor_Generator;
 class AP_BattMonitor_INA2XX;
 class AP_BattMonitor_INA239;
@@ -61,6 +62,7 @@ class AP_BattMonitor
     friend class AP_BattMonitor_SMBus_Maxell;
     friend class AP_BattMonitor_SMBus_Rotoye;
     friend class AP_BattMonitor_DroneCAN;
+    friend class AP_BattMonitor_MAVLink;
     friend class AP_BattMonitor_Sum;
     friend class AP_BattMonitor_FuelFlow;
     friend class AP_BattMonitor_FuelLevel_PWM;
@@ -116,6 +118,7 @@ public:
         EFI                            = 27,
         AD7091R5                       = 28,
         Scripting                      = 29,
+        MAVLink                        = 30,
     };
 
     FUNCTOR_TYPEDEF(battery_failsafe_handler_fn_t, void, const char *, const int8_t);
@@ -261,6 +264,8 @@ public:
     // MPPT Control (Solar panels)
     void MPPT_set_powered_state_to_all(const bool power_on);
     void MPPT_set_powered_state(const uint8_t instance, const bool power_on);
+
+    bool handle_mavlink_battery_status(const mavlink_message_t &msg);
 
     bool option_is_set(uint8_t instance, AP_BattMonitor_Params::Options option) const;
 

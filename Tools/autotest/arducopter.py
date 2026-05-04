@@ -12162,6 +12162,173 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 "id": 1
             })
 
+    def BatteryMAVLinkBackend(self):
+        '''validate MAVLink-backed battery monitor routing and state handling'''
+        self.set_parameters({
+            "BATT_MONITOR": 30,
+            "BATT_CAPACITY": 2000,
+        })
+        self.reboot_sitl()
+        self.set_parameters({
+            "BATT_MAV_ID": 0,
+            "BATT_MAV_COMPID": mavutil.mavlink.MAV_COMP_ID_BATTERY,
+            "BATT_MAV_OPTIONS": 0,
+        })
+
+        def battery_status_send(mav, battery_id, current_battery, current_consumed,
+                                energy_consumed, battery_remaining):
+            voltages = [0xFFFF] * 10
+            voltages[0] = 11500
+            mav.mav.battery_status_send(
+                battery_id,
+                mavutil.mavlink.MAV_BATTERY_FUNCTION_ALL,
+                mavutil.mavlink.MAV_BATTERY_TYPE_LIPO,
+                2500,
+                voltages,
+                current_battery,
+                current_consumed,
+                energy_consumed,
+                battery_remaining,
+            )
+
+        def battery_status_send_from_source(source_system, source_component, battery_id,
+                                            current_battery, current_consumed,
+                                            energy_consumed, battery_remaining):
+            saved_source_system = self.mav.source_system
+            saved_source_component = self.mav.source_component
+            saved_mav_source_system = self.mav.mav.srcSystem
+            saved_mav_source_component = self.mav.mav.srcComponent
+            self.mav.source_system = source_system
+            self.mav.source_component = source_component
+            self.mav.mav.srcSystem = source_system
+            self.mav.mav.srcComponent = source_component
+            try:
+                battery_status_send(
+                    self.mav,
+                    battery_id,
+                    current_battery,
+                    current_consumed,
+                    energy_consumed,
+                    battery_remaining,
+                )
+            finally:
+                self.mav.source_system = saved_source_system
+                self.mav.source_component = saved_source_component
+                self.mav.mav.srcSystem = saved_mav_source_system
+                self.mav.mav.srcComponent = saved_mav_source_component
+
+        def send_until_seen(fieldvalues, send_fn, timeout=10):
+            tstart = self.get_sim_time_cached()
+            while True:
+                send_fn()
+                self.delay_sim_time(0.2)
+                try:
+                    return self.wait_message_field_values('BATTERY_STATUS', fieldvalues, timeout=1)
+                except NotAchievedException:
+                    if self.get_sim_time_cached() - tstart > timeout:
+                        raise
+
+        self.drain_mav()
+
+        self.start_subtest("Wrong source is ignored")
+        battery_status_send_from_source(43, 99, 0, 1234, 500, 7200, 73)
+        self.assert_not_receive_message(
+            'BATTERY_STATUS',
+            timeout=2,
+            condition='BATTERY_STATUS.id==0 and BATTERY_STATUS.current_battery==1234 and BATTERY_STATUS.battery_remaining==73',
+        )
+
+        self.start_subtest("Wrong battery id is ignored")
+        battery_status_send_from_source(self.sysid_thismav(), mavutil.mavlink.MAV_COMP_ID_BATTERY, 1, 1234, 500, 7200, 73)
+        self.assert_not_receive_message(
+            'BATTERY_STATUS',
+            timeout=2,
+            condition='BATTERY_STATUS.id==0 and BATTERY_STATUS.current_battery==1234 and BATTERY_STATUS.battery_remaining==73',
+        )
+
+        self.start_subtest("Autopilot component is ignored")
+        battery_status_send_from_source(self.sysid_thismav(), mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1, 0, 1234, 500, 7200, 73)
+        self.assert_not_receive_message(
+            'BATTERY_STATUS',
+            timeout=2,
+            condition='BATTERY_STATUS.id==0 and BATTERY_STATUS.current_battery==1234 and BATTERY_STATUS.battery_remaining==73',
+        )
+
+        self.start_subtest("Wrong component id is ignored")
+        battery_status_send_from_source(self.sysid_thismav(), 99, 0, 1234, 500, 7200, 73)
+        self.assert_not_receive_message(
+            'BATTERY_STATUS',
+            timeout=2,
+            condition='BATTERY_STATUS.id==0 and BATTERY_STATUS.current_battery==1234 and BATTERY_STATUS.battery_remaining==73',
+        )
+
+        self.start_subtest("Valid source updates battery state")
+        message = send_until_seen(
+            {
+                'id': 0,
+                'current_battery': 1234,
+                'current_consumed': 500,
+                'energy_consumed': 7218,
+                'battery_remaining': 73,
+                'charge_state': mavutil.mavlink.MAV_BATTERY_CHARGE_STATE_OK,
+            },
+            lambda: battery_status_send_from_source(self.sysid_thismav(), mavutil.mavlink.MAV_COMP_ID_BATTERY, 0, 1234, 500, 7218, 73),
+        )
+        if message.temperature != 2500:
+            raise NotAchievedException(f"Expected temperature 2500 got {message.temperature}")
+        if message.voltages[0] != 11500:
+            raise NotAchievedException(f"Expected pack voltage in cell0 got {message.voltages[0]}")
+
+        self.start_subtest("Invalid MAVLink SoC falls back to local estimate")
+        send_until_seen(
+            {
+                'id': 0,
+                'current_battery': 1234,
+                'current_consumed': 500,
+                'energy_consumed': 7218,
+                'battery_remaining': 75,
+                'charge_state': mavutil.mavlink.MAV_BATTERY_CHARGE_STATE_OK,
+            },
+            lambda: battery_status_send_from_source(self.sysid_thismav(), mavutil.mavlink.MAV_COMP_ID_BATTERY, 0, 1234, 500, 7218, -1),
+        )
+
+        self.start_subtest("Ignore MAVLink SoC uses local estimate")
+        self.set_parameters({"BATT_MAV_OPTIONS": 1})
+        try:
+            send_until_seen(
+                {
+                    'id': 0,
+                    'current_battery': 1234,
+                    'current_consumed': 500,
+                    'energy_consumed': 7218,
+                    'battery_remaining': 75,
+                    'charge_state': mavutil.mavlink.MAV_BATTERY_CHARGE_STATE_OK,
+                },
+                lambda: battery_status_send_from_source(self.sysid_thismav(), mavutil.mavlink.MAV_COMP_ID_BATTERY, 0, 1234, 500, 7218, 10),
+            )
+        finally:
+            self.set_parameters({"BATT_MAV_OPTIONS": 0})
+
+        self.start_subtest("Consumed mAh requires current")
+        send_until_seen(
+            {
+                'id': 0,
+                'current_battery': -1,
+                'current_consumed': -1,
+                'battery_remaining': -1,
+                'charge_state': mavutil.mavlink.MAV_BATTERY_CHARGE_STATE_OK,
+            },
+            lambda: battery_status_send_from_source(self.sysid_thismav(), mavutil.mavlink.MAV_COMP_ID_BATTERY, 0, -1, 1000, -1, -1),
+        )
+
+        self.start_subtest("Timeout marks battery unhealthy")
+        self.delay_sim_time(6)
+        self.wait_message_field_values('BATTERY_STATUS', {
+            'id': 0,
+            'current_battery': -1,
+            'charge_state': mavutil.mavlink.MAV_BATTERY_CHARGE_STATE_UNHEALTHY,
+        }, timeout=10)
+
     def MAV_CMD_MISSION_START_p1_p2(self):
         '''make sure we deny MAV_CMD_MISSION_START if either p1 or p2 non-zero'''
         self.upload_simple_relhome_mission([
@@ -12481,6 +12648,7 @@ return update, 1000
             self.REQUIRE_LOCATION_FOR_ARMING,
             self.LoggingFormat,
             self.MissionRTLYawBehaviour,
+            self.BatteryMAVLinkBackend,
             self.BatteryInternalUseOnly,
             self.MAV_CMD_MISSION_START_p1_p2,
             self.ScriptingAHRSSource,

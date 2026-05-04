@@ -4336,6 +4336,12 @@ void GCS_MAVLINK::handle_message(const mavlink_message_t &msg)
         break;
 #endif
 
+#if AP_BATTERY_ENABLED
+    case MAVLINK_MSG_ID_BATTERY_STATUS:
+        AP::battery().handle_mavlink_battery_status(msg);
+        break;
+#endif
+
 #if AP_NOTIFY_MAVLINK_PLAY_TUNE_SUPPORT_ENABLED
     case MAVLINK_MSG_ID_PLAY_TUNE:
         // send message to Notify
